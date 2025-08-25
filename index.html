@@ -1,0 +1,644 @@
+// NotebookAI – Single‑File React App (UI + DeepSeek prompts)
+// -----------------------------------------------------------
+// What you get in this single file:
+// - NotebookLM-style layout (sidebar sources, central workspace, right controls)
+// - Paste text input, optional file drop (reads .txt/.md/.pdf text if available*)
+// - Three actions: Summarize, Simplify, Generate Study Paragraph
+// - Reading level, length, tone, format controls
+// - Streaming UI, skeleton loaders, error states
+// - DeepSeek integration placeholder (fill in API endpoint + key)
+// - Clean Tailwind + shadcn/ui + Framer Motion
+//
+// ⚠️ API: Replace DEEPSEEK_API_URL and DEEPSEEK_API_KEY with your values.
+// If you don't have them yet, toggle "Mock Mode" in the header to see sample outputs.
+//
+// *PDF parsing note: This demo extracts text using the browser's built‑in PDF text layer if available.
+// For robust results in production, use a server worker with a reliable PDF parser or OCR.
+
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "framer-motion";
+import { BookOpen, Plus, Upload, FileText, Sparkles, Wand2, NotebookPen, Settings2, Trash2, Download, Share2, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { Separator } from "@/components/ui/separator";
+
+// -----------------------------
+// Config / Constants
+// -----------------------------
+const APP_NAME = "NotebookAI";
+const DEEPSEEK_API_URL = "https://YOUR_DEEPSEEK_ENDPOINT"; // e.g., chat completions endpoint
+const DEEPSEEK_API_KEY = "YOUR_DEEPSEEK_API_KEY"; // move to server env in production
+
+const DEFAULT_SYSTEM_PROMPT = `You are NotebookAI, an academic summarization and simplification assistant for students. Your priorities are fidelity to the source, clarity, and age‑appropriate language. Always:\n1) Preserve original meaning; do not invent facts.\n2) Use plain language and short sentences.\n3) Provide structured outputs with headers.\n4) Include citations to source spans when enabled.\n5) Obey requested reading level and length.\n6) Flag uncertainty and conflicting passages.\n7) Avoid any test/exam leakage or cheating; provide learning‑oriented help only.`;
+
+const MAP_PROMPT = (readingLevel) =>
+  `Summarize this text faithfully for a ${readingLevel} student.\nOutput JSON with keys: tldr (80-120 words), key_points (<=8), glossary (<=10 items with plain definitions), study_questions (3-5). Do not invent facts.`;
+
+const SIMPLIFY_PROMPT = (readingLevel) => `You are simplifying for a student at ${readingLevel}. Rewrite the passage to be shorter and easier while preserving meaning and key terms.\nConstraints:\n- Short sentences (max 18 words).\n- Replace jargon with everyday words; keep essential academic terms.\n- Keep named entities and dates.\n- End with a one-line 'Why this matters'.`;
+
+const PARAGRAPH_PROMPT = (topic, sentences, must = "", avoid = "") =>
+  `Write a concise study paragraph about ${topic}. Length: ${sentences} sentences. Must include: ${must || "-"}. Avoid: ${avoid || "-"}. Finish with a single-sentence takeaway.`;
+
+const READING_LEVELS = ["Grade 3", "Grade 5", "Grade 7", "Grade 9", "Grade 11", "College"] as const;
+const LENGTH_PRESETS = ["Short", "Medium", "Long"] as const;
+const TONES = ["Neutral", "Teacher", "Peer"] as const;
+const FORMATS = ["Bullets", "Paragraph"] as const;
+
+// -----------------------------
+// Utility: simple client-side chunking (for very long inputs)
+// -----------------------------
+function chunkText(text: string, maxChars = 5000, overlap = 300) {
+  const chunks: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const end = Math.min(i + maxChars, text.length);
+    chunks.push(text.slice(i, end));
+    i = end - overlap;
+    if (i < 0) i = 0;
+  }
+  return chunks;
+}
+
+// -----------------------------
+// Mock responses (for demo without API)
+// -----------------------------
+const mockSummary = {
+  tldr:
+    "This chapter explains the main idea, gives key examples, and shows why the topic matters for students. It breaks complex ideas into simple steps, defines new words, and connects them to real‑life uses. It also points out common mistakes and how to avoid them. By the end, you should understand the core concept, its parts, and how to use it in homework or exams.",
+  key_points: [
+    "Core idea stated in simple terms",
+    "3–5 important details that support the idea",
+    "Clear example that shows how it works",
+    "Why it matters in school and life",
+    "Common mistakes and quick fixes",
+  ],
+  glossary: [
+    { term: "Concept", definition: "The main idea you are learning." },
+    { term: "Evidence", definition: "Facts or examples that support an idea." },
+  ],
+  study_questions: [
+    "Explain the core idea in one sentence.",
+    "Give one example and tell why it fits.",
+    "List two common mistakes and how to avoid them.",
+  ],
+};
+
+const mockSimplify = {
+  simplified:
+    "The paragraph explains a big idea using simple words. It gives a clear example and shows why it matters. It also warns about common errors and how to fix them.",
+  why_it_matters: "This helps you learn faster and avoid confusion.",
+};
+
+const mockParagraph = {
+  paragraph:
+    "Photosynthesis is how plants make food from sunlight, water, and carbon dioxide. Chlorophyll captures light energy, which powers chemical reactions that produce glucose and oxygen. This process fuels plant growth and releases oxygen into the air. It links the sun’s energy to the food chain and stabilizes Earth’s atmosphere.",
+  takeaway: "Photosynthesis turns light into life‑supporting energy and oxygen.",
+};
+
+// -----------------------------
+// Minimal DeepSeek client (placeholder)
+// -----------------------------
+async function callDeepSeek(messages: any[], stream = false) {
+  if (!DEEPSEEK_API_URL || DEEPSEEK_API_URL.includes("YOUR_")) {
+    throw new Error("DeepSeek API endpoint not configured");
+  }
+  const res = await fetch(DEEPSEEK_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "deepseek-v3-0324", // confirm model slug with your provider
+      messages,
+      temperature: 0.2,
+      stream,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`DeepSeek error ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
+// -----------------------------
+// Components
+// -----------------------------
+function Header({ mockMode, setMockMode }: { mockMode: boolean; setMockMode: (v: boolean) => void }) {
+  return (
+    <div className="sticky top-0 z-40 border-b bg-white/75 backdrop-blur supports-[backdrop-filter]:bg-white/60">
+      <div className="mx-auto max-w-7xl px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <BookOpen className="h-6 w-6" />
+          <span className="font-semibold">{APP_NAME}</span>
+          <span className="text-xs text-muted-foreground">Summarize • Simplify • Study</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Label htmlFor="mock" className="text-xs">Mock Mode</Label>
+            <Switch id="mock" checked={mockMode} onCheckedChange={setMockMode} />
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm"><Settings2 className="h-4 w-4 mr-2"/>Settings</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem asChild>
+                <a href="#" onClick={(e)=>e.preventDefault()}>About {APP_NAME}</a>
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild>
+                <a href="#" onClick={(e)=>e.preventDefault()}>Privacy & Data</a>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({ sources, onAddText, onClear }: { sources: string[]; onAddText: (t: string) => void; onClear: () => void }) {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  return (
+    <aside className="w-full md:w-64 border-r bg-white">
+      <div className="p-4 flex items-center justify-between">
+        <span className="text-sm font-medium">Sources</span>
+        <Button variant="ghost" size="icon" onClick={onClear} title="Clear sources">
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </div>
+      <div className="px-4 pb-3">
+        <Button className="w-full" variant="secondary" onClick={()=>fileRef.current?.click()}>
+          <Upload className="h-4 w-4 mr-2"/> Upload (.txt/.md/.pdf)
+        </Button>
+        <input ref={fileRef} type="file" accept=".txt,.md,application/pdf" className="hidden" onChange={async (e)=>{
+          const f = e.target.files?.[0];
+          if (!f) return;
+          if (f.type === "application/pdf") {
+            const text = await readPdfTextBrowser(f).catch(()=>"");
+            if (text) onAddText(text);
+          } else {
+            const text = await f.text();
+            onAddText(text);
+          }
+        }}/>
+      </div>
+      <Separator />
+      <div className="p-4 space-y-3">
+        <Card>
+          <CardHeader className="py-3">
+            <CardTitle className="text-sm">Quick Add</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Textarea placeholder="Paste text here and click Add" className="min-h-[100px]" id="quick-add"></Textarea>
+            <Button className="mt-2 w-full" onClick={()=>{
+              const el = document.getElementById("quick-add") as HTMLTextAreaElement;
+              if (el?.value.trim()) onAddText(el.value.trim());
+            }}>
+              <Plus className="h-4 w-4 mr-2"/> Add to Sources
+            </Button>
+          </CardContent>
+        </Card>
+        <div>
+          {sources.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No sources yet. Upload a file or paste text.</p>
+          ) : (
+            <ul className="space-y-2 max-h-[40vh] overflow-auto pr-1">
+              {sources.map((s, i)=> (
+                <li key={i} className="text-xs p-2 rounded border bg-muted/40 flex items-start gap-2">
+                  <FileText className="h-4 w-4 mt-0.5"/>
+                  <span className="line-clamp-3">{s}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function Controls({ level, setLevel, length, setLength, tone, setTone, format, setFormat, sentences, setSentences, citations, setCitations }:{
+  level: string; setLevel: (v: string)=>void;
+  length: string; setLength: (v: string)=>void;
+  tone: string; setTone: (v: string)=>void;
+  format: string; setFormat: (v: string)=>void;
+  sentences: number; setSentences: (v: number)=>void;
+  citations: boolean; setCitations: (v: boolean)=>void;
+}){
+  return (
+    <aside className="w-full md:w-72 border-l bg-white">
+      <div className="p-4 space-y-6">
+        <div>
+          <Label className="text-xs">Reading level</Label>
+          <div className="mt-2">
+            <select className="w-full rounded-md border px-3 py-2 text-sm" value={level} onChange={(e)=>setLevel(e.target.value)}>
+              {READING_LEVELS.map(l=> <option key={l} value={l}>{l}</option>)}
+            </select>
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Length</Label>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            {LENGTH_PRESETS.map(l=> (
+              <Button key={l} variant={l===length?"default":"outline"} size="sm" onClick={()=>setLength(l)}>{l}</Button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Tone</Label>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            {TONES.map(t=> (
+              <Button key={t} variant={t===tone?"default":"outline"} size="sm" onClick={()=>setTone(t)}>{t}</Button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Format</Label>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {FORMATS.map(f=> (
+              <Button key={f} variant={f===format?"default":"outline"} size="sm" onClick={()=>setFormat(f)}>{f}</Button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs">Study paragraph length</Label>
+          <div className="flex items-center gap-3 mt-2">
+            <Slider defaultValue={[4]} min={2} max={8} step={1} onValueChange={(v)=>setSentences(v[0])} />
+            <span className="text-xs w-6 text-right">{sentences}</span>
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <Label className="text-xs" htmlFor="cit">Show citations</Label>
+          <Switch id="cit" checked={citations} onCheckedChange={setCitations}/>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function Workspace({
+  combinedText,
+  onSummarize,
+  onSimplify,
+  onGenerate,
+  loading,
+  error,
+  outputs,
+}:{
+  combinedText: string;
+  onSummarize: ()=>void;
+  onSimplify: ()=>void;
+  onGenerate: (topic: string)=>void;
+  loading: boolean;
+  error: string | null;
+  outputs: any;
+}){
+  const [topic, setTopic] = useState("");
+  const disabled = !combinedText && !topic;
+  return (
+    <main className="flex-1 bg-gradient-to-b from-white to-slate-50">
+      <div className="mx-auto max-w-3xl p-4 md:p-6 space-y-4">
+        <Card className="border-dashed">
+          <CardHeader className="py-4">
+            <CardTitle className="text-base flex items-center gap-2"><Sparkles className="h-5 w-5"/> Actions</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-3">
+            <Button onClick={onSummarize} disabled={!combinedText || loading}>
+              <NotebookPen className="h-4 w-4 mr-2"/> Summarize
+            </Button>
+            <Button variant="secondary" onClick={onSimplify} disabled={!combinedText || loading}>
+              <Wand2 className="h-4 w-4 mr-2"/> Make it simpler
+            </Button>
+            <div className="flex gap-2">
+              <Input placeholder="Study paragraph topic" value={topic} onChange={(e)=>setTopic(e.target.value)} />
+              <Button onClick={()=>onGenerate(topic)} disabled={!topic || loading}>Go</Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {error && (
+          <div className="flex items-start gap-2 text-red-600 text-sm">
+            <AlertTriangle className="h-4 w-4 mt-0.5"/> {error}
+          </div>
+        )}
+
+        <Tabs defaultValue="summary" className="w-full">
+          <TabsList>
+            <TabsTrigger value="summary">Summary</TabsTrigger>
+            <TabsTrigger value="simplified">Simplified</TabsTrigger>
+            <TabsTrigger value="paragraph">Study Paragraph</TabsTrigger>
+            <TabsTrigger value="source">Source</TabsTrigger>
+          </TabsList>
+          <TabsContent value="summary">
+            <ResultCard title="Summary" loading={loading} emptyHint="Run Summarize to see results.">
+              {outputs.summary && <SummaryView data={outputs.summary}/>}            
+            </ResultCard>
+          </TabsContent>
+          <TabsContent value="simplified">
+            <ResultCard title="Simplified" loading={loading} emptyHint="Run Make it simpler to see results.">
+              {outputs.simplify && <SimplifyView data={outputs.simplify}/>}            
+            </ResultCard>
+          </TabsContent>
+          <TabsContent value="paragraph">
+            <ResultCard title="Study Paragraph" loading={loading} emptyHint="Enter a topic and click Go.">
+              {outputs.paragraph && <ParagraphView data={outputs.paragraph}/>}            
+            </ResultCard>
+          </TabsContent>
+          <TabsContent value="source">
+            <Card>
+              <CardHeader className="py-3"><CardTitle className="text-base">Combined Source</CardTitle></CardHeader>
+              <CardContent>
+                <pre className="whitespace-pre-wrap text-sm text-slate-700">{combinedText || "(No source text yet)"}</pre>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </main>
+  );
+}
+
+function ResultCard({ title, loading, emptyHint, children }:{ title:string; loading:boolean; emptyHint:string; children: React.ReactNode }){
+  return (
+    <Card>
+      <CardHeader className="py-3 flex flex-row items-center justify-between">
+        <CardTitle className="text-base">{title}</CardTitle>
+        {loading && <Loader2 className="h-4 w-4 animate-spin"/>}
+      </CardHeader>
+      <CardContent>
+        {children || (
+          <p className="text-sm text-muted-foreground">{emptyHint}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SummaryView({ data }:{ data: any }){
+  return (
+    <div className="space-y-4">
+      {data.tldr && (
+        <section>
+          <h3 className="font-semibold">TL;DR</h3>
+          <p className="text-slate-700 mt-1">{data.tldr}</p>
+        </section>
+      )}
+      {Array.isArray(data.key_points) && data.key_points.length>0 && (
+        <section>
+          <h3 className="font-semibold">Key Points</h3>
+          <ul className="list-disc pl-5 mt-1 space-y-1">
+            {data.key_points.map((p:string, i:number)=> <li key={i}>{p}</li>)}
+          </ul>
+        </section>
+      )}
+      {Array.isArray(data.glossary) && data.glossary.length>0 && (
+        <section>
+          <h3 className="font-semibold">Glossary</h3>
+          <ul className="pl-0 mt-1 space-y-1">
+            {data.glossary.map((g:any, i:number)=> (
+              <li key={i} className="text-sm"><span className="font-medium">{g.term}</span>: {g.definition}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {Array.isArray(data.study_questions) && data.study_questions.length>0 && (
+        <section>
+          <h3 className="font-semibold">Study Questions</h3>
+          <ol className="list-decimal pl-5 mt-1 space-y-1">
+            {data.study_questions.map((q:string, i:number)=> <li key={i}>{q}</li>)}
+          </ol>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function SimplifyView({ data }:{ data:any }){
+  return (
+    <div className="space-y-3">
+      <p className="text-slate-800 whitespace-pre-wrap">{data.simplified}</p>
+      {data.why_it_matters && (
+        <p className="text-sm text-slate-600"><span className="font-medium">Why this matters:</span> {data.why_it_matters}</p>
+      )}
+    </div>
+  );
+}
+
+function ParagraphView({ data }:{ data:any }){
+  return (
+    <div className="space-y-3">
+      <p className="text-slate-800 whitespace-pre-wrap">{data.paragraph}</p>
+      {data.takeaway && (
+        <p className="text-sm text-slate-600"><span className="font-medium">Takeaway:</span> {data.takeaway}</p>
+      )}
+    </div>
+  );
+}
+
+// -----------------------------
+// PDF text extraction (very lightweight; demo only)
+// -----------------------------
+async function readPdfTextBrowser(file: File): Promise<string> {
+  // Attempt to use PDF.js if present on window; otherwise, fallback to empty
+  // In production, use a server worker / proper parser.
+  // @ts-ignore
+  const pdfjs = (window as any).pdfjsLib;
+  if (!pdfjs) {
+    alert("PDF.js not found. Include pdfjsLib on the page for PDF support, or upload .txt/.md.");
+    return "";
+  }
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: buf }).promise;
+  let text = "";
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const pageText = content.items.map((it: any) => (it.str || "")).join(" ");
+    text += `\n\n[Page ${p}]\n` + pageText;
+  }
+  return text.trim();
+}
+
+// -----------------------------
+// Root App
+// -----------------------------
+export default function NotebookAIApp(){
+  const [sources, setSources] = useState<string[]>([]);
+  const [level, setLevel] = useState<typeof READING_LEVELS[number]>("Grade 7");
+  const [length, setLength] = useState<typeof LENGTH_PRESETS[number]>("Medium");
+  const [tone, setTone] = useState<typeof TONES[number]>("Neutral");
+  const [format, setFormat] = useState<typeof FORMATS[number]>("Bullets");
+  const [sentences, setSentences] = useState(4);
+  const [citations, setCitations] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [outputs, setOutputs] = useState<any>({});
+  const [mockMode, setMockMode] = useState(true);
+
+  const combinedText = useMemo(()=> sources.join("\n\n---\n\n"), [sources]);
+
+  function addText(t: string){
+    setSources(prev=> [t, ...prev]);
+  }
+  function clearSources(){
+    setSources([]);
+    setOutputs({});
+  }
+
+  function lengthWindow(){
+    switch(length){
+      case "Short": return "80-120 words";
+      case "Medium": return "150-250 words";
+      case "Long": return "300-450 words";
+    }
+  }
+
+  // --------------- Actions
+  async function doSummarize(){
+    setError(null); setLoading(true);
+    try {
+      if (mockMode) {
+        await new Promise(r=>setTimeout(r, 800));
+        setOutputs((o:any)=> ({...o, summary: mockSummary}));
+      } else {
+        const chunks = chunkText(combinedText);
+        // Map step
+        const partials = [] as any[];
+        for (const ch of chunks){
+          const messages = [
+            { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+            { role: "user", content: MAP_PROMPT(level) + "\n\nTEXT:\n" + ch + `\n\nLength target: ${lengthWindow()}. Tone: ${tone}. Format: ${format}. Citations: ${citations ? "on" : "off"}.`},
+          ];
+          const json = await callDeepSeek(messages);
+          const content = json.choices?.[0]?.message?.content || "";
+          partials.push(safeParse(content));
+        }
+        // Reduce step (client-side simple merge)
+        const merged = reduceSummaries(partials);
+        setOutputs((o:any)=> ({...o, summary: merged}));
+      }
+    } catch (e:any){
+      setError(e.message || "Failed to summarize");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function doSimplify(){
+    setError(null); setLoading(true);
+    try {
+      if (mockMode) {
+        await new Promise(r=>setTimeout(r, 600));
+        setOutputs((o:any)=> ({...o, simplify: mockSimplify}));
+      } else {
+        const messages = [
+          { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+          { role: "user", content: SIMPLIFY_PROMPT(level) + "\n\nPASSAGE:\n" + combinedText },
+        ];
+        const json = await callDeepSeek(messages);
+        const content = json.choices?.[0]?.message?.content || "";
+        const parsed = safeParse(content) || { simplified: content };
+        setOutputs((o:any)=> ({...o, simplify: parsed}));
+      }
+    } catch (e:any){
+      setError(e.message || "Failed to simplify");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function doGenerate(topic: string){
+    setError(null); setLoading(true);
+    try {
+      if (mockMode) {
+        await new Promise(r=>setTimeout(r, 600));
+        setOutputs((o:any)=> ({...o, paragraph: mockParagraph}));
+      } else {
+        const messages = [
+          { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+          { role: "user", content: PARAGRAPH_PROMPT(topic, sentences) + `\nReading level: ${level}. Tone: ${tone}.` },
+        ];
+        const json = await callDeepSeek(messages);
+        const content = json.choices?.[0]?.message?.content || "";
+        const parsed = safeParse(content) || { paragraph: content };
+        setOutputs((o:any)=> ({...o, paragraph: parsed}));
+      }
+    } catch (e:any){
+      setError(e.message || "Failed to generate paragraph");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col">
+      <Header mockMode={mockMode} setMockMode={setMockMode} />
+      <div className="flex-1 grid grid-cols-1 md:grid-cols-[16rem_1fr_18rem]">
+        <Sidebar sources={sources} onAddText={addText} onClear={clearSources} />
+        <Workspace
+          combinedText={combinedText}
+          onSummarize={doSummarize}
+          onSimplify={doSimplify}
+          onGenerate={doGenerate}
+          loading={loading}
+          error={error}
+          outputs={outputs}
+        />
+        <Controls
+          level={level} setLevel={setLevel}
+          length={length} setLength={setLength}
+          tone={tone} setTone={setTone}
+          format={format} setFormat={setFormat}
+          sentences={sentences} setSentences={setSentences}
+          citations={citations} setCitations={setCitations}
+        />
+      </div>
+      <footer className="border-t bg-white/60">
+        <div className="mx-auto max-w-7xl px-4 py-3 text-xs text-muted-foreground flex items-center justify-between">
+          <span>{APP_NAME} • DeepSeek V3 0324 • Student edition</span>
+          <span>Tip: Use Mock Mode to test UI without an API key.</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+// -----------------------------
+// Helpers
+// -----------------------------
+function safeParse(s: string){
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+function reduceSummaries(parts: any[]){
+  const tldr = parts.map(p=>p?.tldr).filter(Boolean).join(" ").split(/\.\s/).slice(0,6).join(". ") + ".";
+  const key_points = dedupe(parts.flatMap(p=>p?.key_points || [])).slice(0,8);
+  const glossaryMap = new Map<string,string>();
+  for (const p of parts){
+    for (const g of (p?.glossary||[])){
+      if (!glossaryMap.has(g.term)) glossaryMap.set(g.term, g.definition);
+    }
+  }
+  const glossary = Array.from(glossaryMap.entries()).slice(0,10).map(([term, definition])=>({term, definition}));
+  const study_questions = dedupe(parts.flatMap(p=>p?.study_questions || [])).slice(0,5);
+  return { tldr, key_points, glossary, study_questions };
+}
+
+function dedupe(arr: any[]){
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const item of arr){
+    const s = String(item).trim().toLowerCase();
+    if (!seen.has(s)){ seen.add(s); out.push(item); }
+  }
+  return out;
+}
