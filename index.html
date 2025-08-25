@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+x<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -27,6 +27,7 @@
     .right .study{background:#9333ea;}
     .right .study:hover{background:#7e22ce;}
     select{width:100%;padding:6px;border:1px solid #ccc;border-radius:6px;margin-bottom:12px;}
+    #loading{font-weight:bold; color:#2563eb; margin-bottom:10px;}
   </style>
 </head>
 <body>
@@ -46,7 +47,7 @@
     </div>
     <div class="workspace">
       <h2>Output</h2>
-      <div id="loading" style="font-weight:bold; color:#2563eb; margin-bottom:10px;">Loading AI model... Please wait ⏳</div>
+      <div id="loading">Loading AI model... Please wait ⏳</div>
       <div class="output" id="outputBox">Your summary will appear here.</div>
     </div>
   </div>
@@ -78,9 +79,9 @@
     </select>
   </div>
 
-  <script type="module">
-    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers/dist/transformers.min.js';
-
+  <!-- Load transformers UMD -->
+  <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers/dist/transformers.min.js"></script>
+  <script>
     let summarizer;
     const loadingDiv = document.getElementById("loading");
     const summarizeBtn = document.getElementById("summarizeBtn");
@@ -88,24 +89,23 @@
     const studyBtn = document.getElementById("studyBtn");
 
     async function init() {
-      loadingDiv.style.display = "block";
-      // Load summarization model
-      summarizer = await pipeline('summarization', 'Xenova/distilbart-cnn-12-6');
-      loadingDiv.style.display = "none";
-      // Enable buttons after model is ready
-      summarizeBtn.disabled = false;
-      simplifyBtn.disabled = false;
-      studyBtn.disabled = false;
+      try {
+        loadingDiv.style.display = "block";
+        summarizer = await window.transformers.pipeline('summarization', 'Xenova/distilbart-cnn-12-6');
+        loadingDiv.style.display = "none";
+        summarizeBtn.disabled = false;
+        simplifyBtn.disabled = false;
+        studyBtn.disabled = false;
+      } catch(err) {
+        loadingDiv.innerText = "Error loading AI model: " + err.message;
+      }
     }
     init();
 
     async function askAI(type) {
       const input = document.getElementById("inputText").value.trim();
       const outputBox = document.getElementById("outputBox");
-      if (!input) {
-        outputBox.innerText = "⚠️ Please paste some text first.";
-        return;
-      }
+      if (!input) { outputBox.innerText = "⚠️ Please paste some text first."; return; }
 
       outputBox.innerText = "Processing...";
 
@@ -115,18 +115,17 @@
           const result = await summarizer(input, { max_length: 200 });
           text = result[0].summary_text;
         } else if (type === "simplify") {
-          // Simple browser-based simplification
           text = input
             .split(". ")
             .map(s => s.trim())
-            .map(s => s.length > 80 ? s.slice(0, 80) + "..." : s)
+            .map(s => s.length > 80 ? s.slice(0,80)+"..." : s)
             .join(". ");
-        } else { // study paragraph
+        } else {
           const result = await summarizer(input, { max_length: 250 });
           text = "Key Ideas:\n" + result[0].summary_text + "\n\nQuestions:\n- What are the main points?\n- How can this be applied?";
         }
         outputBox.innerText = text;
-      } catch (err) {
+      } catch(err) {
         outputBox.innerText = "Error: " + err.message;
       }
     }
@@ -153,3 +152,4 @@
   </script>
 </body>
 </html>
+
