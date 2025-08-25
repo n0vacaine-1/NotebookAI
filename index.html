@@ -25,11 +25,7 @@
       flex-direction: column;
     }
 
-    .sidebar h2 {
-      font-size: 18px;
-      margin-bottom: 15px;
-    }
-
+    .sidebar h2 { font-size: 18px; margin-bottom: 15px; }
     .sidebar textarea {
       width: 100%;
       height: 150px;
@@ -107,11 +103,7 @@
       flex-direction: column;
     }
 
-    .right h2 {
-      font-size: 16px;
-      margin-bottom: 10px;
-    }
-
+    .right h2 { font-size: 16px; margin-bottom: 10px; }
     .right button {
       padding: 10px;
       margin-bottom: 10px;
@@ -201,30 +193,32 @@
 
       outputBox.innerText = "Processing...";
 
-      let prompt = "";
-      if (type === "summary") {
-        prompt = `Summarize this text for a student:\\n${input}`;
-      } else if (type === "simplify") {
-        prompt = `Simplify this text into very easy-to-understand language:\\n${input}`;
-      } else {
-        prompt = `Create a short study paragraph with key ideas and questions from this text:\\n${input}`;
-      }
+      const promptMap = {
+        summary: `Summarize this text for a student:\n${input}`,
+        simplify: `Simplify this text into very easy-to-understand language:\n${input}`,
+        paragraph: `Create a short study paragraph with key ideas and questions from this text:\n${input}`
+      };
+
+      const prompt = promptMap[type];
 
       try {
-        const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: "Bearer sk-d7ba93b873a04e51bced3ce8a50a1e5f"
-          },
-          body: JSON.stringify({
-            model: "deepseek-chat",
-            messages: [
-              { role: "system", content: "You are NotebookAI, a study assistant for students." },
-              { role: "user", content: prompt }
-            ]
-          })
-        });
+        const res = await fetch(
+          "https://generativelanguage.googleapis.com/v1beta2/models/gemini-1.5-chat/completions",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": "Bearer AIzaSyC8EsIYbM9X5OXE3_w95pQ5MVUgpac9CCA" // <-- Replace with your Gemini API key
+            },
+            body: JSON.stringify({
+              messages: [
+                { role: "system", content: "You are NotebookAI, a study assistant for students." },
+                { role: "user", content: prompt }
+              ]
+            })
+          }
+        );
+
         const data = await res.json();
         outputBox.innerText = data.choices?.[0]?.message?.content || "Error generating output.";
       } catch (err) {
@@ -244,13 +238,4 @@
     }
 
     function downloadOutput() {
-      const text = document.getElementById("outputBox").innerText;
-      const blob = new Blob([text], { type: "text/plain" });
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = "NotebookAI_Output.txt";
-      link.click();
-    }
-  </script>
-</body>
-</html>
+      const text = document.getElementById("outputBox").i
