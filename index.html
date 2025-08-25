@@ -40,21 +40,22 @@
     <div class="topbar">
       <h1>NotebookAI</h1>
       <div class="actions">
-        <button onclick="copyOutput()">Copy</button>
-        <button onclick="downloadOutput()">Download</button>
+        <button id="copyBtn" onclick="copyOutput()">Copy</button>
+        <button id="downloadBtn" onclick="downloadOutput()">Download</button>
       </div>
     </div>
     <div class="workspace">
       <h2>Output</h2>
+      <div id="loading" style="font-weight:bold; color:#2563eb; margin-bottom:10px;">Loading AI model... Please wait ⏳</div>
       <div class="output" id="outputBox">Your summary will appear here.</div>
     </div>
   </div>
 
   <div class="right">
     <h2>Actions</h2>
-    <button class="summarize" onclick="askAI('summary')">Summarize</button>
-    <button class="simplify" onclick="askAI('simplify')">Simplify</button>
-    <button class="study" onclick="askAI('paragraph')">Study Paragraph</button>
+    <button id="summarizeBtn" class="summarize" onclick="askAI('summary')" disabled>Summarize</button>
+    <button id="simplifyBtn" class="simplify" onclick="askAI('simplify')" disabled>Simplify</button>
+    <button id="studyBtn" class="study" onclick="askAI('paragraph')" disabled>Study Paragraph</button>
 
     <h2>Settings</h2>
     <label>Reading Level</label>
@@ -77,14 +78,24 @@
     </select>
   </div>
 
-  <!-- Load transformers.js -->
   <script type="module">
     import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers/dist/transformers.min.js';
 
     let summarizer;
+    const loadingDiv = document.getElementById("loading");
+    const summarizeBtn = document.getElementById("summarizeBtn");
+    const simplifyBtn = document.getElementById("simplifyBtn");
+    const studyBtn = document.getElementById("studyBtn");
+
     async function init() {
-      // Load summarization model in browser
+      loadingDiv.style.display = "block";
+      // Load summarization model
       summarizer = await pipeline('summarization', 'Xenova/distilbart-cnn-12-6');
+      loadingDiv.style.display = "none";
+      // Enable buttons after model is ready
+      summarizeBtn.disabled = false;
+      simplifyBtn.disabled = false;
+      studyBtn.disabled = false;
     }
     init();
 
@@ -104,7 +115,7 @@
           const result = await summarizer(input, { max_length: 200 });
           text = result[0].summary_text;
         } else if (type === "simplify") {
-          // Basic simplification by shortening sentences (browser-based)
+          // Simple browser-based simplification
           text = input
             .split(". ")
             .map(s => s.trim())
